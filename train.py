@@ -28,7 +28,7 @@ def set_parameter():
     parser.add_argument('--ndf', type=int, default=64, help='判别网络中基础feature数目')
     parser.add_argument('--nef', type=int, default=64, help='第一个转换层中的编码器滤波器')
     parser.add_argument('--nc', type=int, default=3, help='彩色图片通道数')
-    parser.add_argument('--niter', type=int, default=200, help='网络训练过程中epoch数目')
+    parser.add_argument('--niter', type=int, default=20, help='网络训练过程中epoch数目')
     parser.add_argument('--lr', type=float, default=0.0002, help='初始学习率')
     parser.add_argument('--beta1', type=float, default=0.5, help='使用Adam优化算法中的β1参数值')
     parser.add_argument('--cuda', default=False, help='是否可以使用CUDA训练')
@@ -123,6 +123,14 @@ def train():
     resume_epoch = 0  # 保存已经训练过的网络的 epoch
     real_label = random.uniform(0.9, 1)   # 定义真实图片的标签
     fake_label = random.uniform(0, 0.1)   # 定义假图的标签
+    d_real = []
+    d_fake = []
+    d_loss = []
+    g_loss = []
+    d_real_epoch = []
+    d_fake_epoch = []
+    d_loss_epoch = []
+    g_loss_epoch = []
     # 判断是否可以使用 GPU
     if torch.cuda.is_available() and opt.cuda:
         # 增加网络运行的效率
@@ -188,7 +196,6 @@ def train():
     optimizerD_Aux = optim.RMSprop(netD_Aux.parameters(), lr=opt.lr)
     optimizerG = optim.RMSprop(netG.parameters(), lr=opt.lr)
 
-
     # 开始训练
     for epoch in range(resume_epoch, opt.niter):
         # 对于可索引序列，enumerate可以同时获得索引和值
@@ -206,10 +213,6 @@ def train():
             input_cropped.data[:, 2, 34:94, 34:94] = 2 * 123.0 / 255.0 - 1.0
             # vutils.save_image(input_cropped, 'result/temp/cropped_{}_epoch{}.png'.format(i+1, epoch + 1))
 
-            # print("real_cpu:", real_cpu.size())
-            # print("input_cropped:", input_cropped.size())
-            # print("real_center:", real_center.size())
-
             # 训练D网络
             netD.zero_grad()   # 梯度归零
             netD_Aux.zero_grad()
@@ -225,7 +228,6 @@ def train():
 
             # 将生成图片输入到 netD
             output_fake_g = netG(input_cropped)
-            # print(output_fake_g.size())
             f_label.data.resize_(batch_size).fill_(fake_label)  # 构造假的标签
             # =============================================================================
             lossd_localBCE = criterionBCE(netD(output_fake_g.detach()), f_label)
@@ -237,7 +239,7 @@ def train():
             loss_d.backward()  # 损失回传
             lossd_fake_ave = output_fake_g.data.mean()  # D网络判别G损失的均值
             # 损失和
-            loss_D = lossd_real_center + loss_d
+            loss_D = lossreal + loss_d
             optimizerD.step()   # 逐步优化
             optimizerD_Aux.step()
 
@@ -264,12 +266,28 @@ def train():
                     epoch+1, opt.niter, i+1, len(dataloader), lossd_real_ave, lossd_fake_ave, loss_D, loss_g
                 ))
 
+            # 保存每次结果
+            d_real.append(lossd_real_ave)
+            d_fake.append(lossd_fake_ave)
+            d_loss.append(loss_D)
+            g_loss.append(loss_g)
+
             if (epoch + 1) % 1 == 0:
                 recon_image = input_cropped.clone()
-                vutils.save_image(fake.data, 'result/temp/fake_{}_epoch{}.png'.format(i+1, epoch + 1))
+                vutils.save_image(fake.data, 'result/temp/fake_epoch{}_{}.png'.format(epoch + 1, i+1))
                 recon_image.data[:, :, 32:96, 32:96] = fake.data
                 # 修复图
-                vutils.save_image(recon_image.data, 'result/temp/reco_{}_epoch{}.png'.format(i+1, epoch + 1))
+                vutils.save_image(recon_image.data, 'result/temp/reco_epoch{}_{}.png'.format(epoch + 1, i+1))
+
+        # 保存数据结果
+        d_real_epoch.append(round(np.mean(d_real), 4))
+        d_real.clear()
+        d_fake_epoch.append(round(np.mean(d_fake), 4))
+        d_fake.clear()
+        d_loss_epoch.append(round(np.mean(d_loss),4))
+        d_loss.clear()
+        g_loss_epoch.append(round(np.mean(g_loss), 4))
+        g_loss.clear()
         # 存储模型
         if (epoch + 1) % 20 == 0:
             torch.save({'epoch': epoch + 1,
@@ -279,16 +297,42 @@ def train():
                         'state_dict': netD.state_dict()},
                        'model/netD_{}.pth'.format(epoch + 1))
 
-
-# 局部对抗损失
-def local_con_loss():
-    pass
+    return d_real_epoch, d_fake_epoch, d_loss_epoch, g_loss_epoch
 
 
-# 全局对抗损失
-def globle_con_loss():
-    pass
+# 显示结果
+def drawing(d_real, d_fake, loss_d, loss_g):
+    opt = set_parameter()
+    # d_real 趋势
+    plt.plot(len(d_real), d_real, color="red", linewidth=2)
+    plt.title("D_Real", fontsize=20)
+    plt.xlabel("Epoch", fontsize=16)
+    plt.ylabel("Prob", fontsize=16)
+    plt.savefig("result/image/d_real_{}.jpg".format(opt.niter))
+    # plt.show()
+    # d_fake 趋势
+    plt.plot(len(d_fake), d_fake, color="yellow", linewidth=2)
+    plt.title("D_Fake", fontsize=20)
+    plt.xlabel("Epoch", fontsize=16)
+    plt.ylabel("Prob", fontsize=16)
+    plt.savefig("result/image/d_fake_{}.jpg".format(opt.niter))
+
+    # loss_d 趋势
+    plt.plot(len(loss_d), loss_d, color="green", linewidth=2)
+    plt.title("Loss_D", fontsize=20)
+    plt.xlabel("Epoch", fontsize=16)
+    plt.ylabel("Loss", fontsize=16)
+    plt.savefig("result/image/loss_d_{}.jpg".format(opt.niter))
+
+    # loss_g 趋势
+    plt.plot(len(loss_g), loss_g, color="orange", linewidth=2)
+    plt.title("Loss_G", fontsize=20)
+    plt.xlabel("Epoch", fontsize=16)
+    plt.ylabel("Loss", fontsize=16)
+    plt.savefig("result/image/loss_g_{}.jpg".format(opt.niter))
 
 
 if __name__ == "__main__":
-    train()
+    x1, x2, x3, x4, = train()
+    drawing(x1, x2, x3, x4)
+

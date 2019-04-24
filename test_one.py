@@ -1,20 +1,17 @@
 from __future__ import print_function
 import argparse
+import utils
 import torch.nn as nn
 import torch.utils.data
-import torchvision.datasets as dset
 import torchvision.transforms as transforms
-import torchvision.utils as vutils
 from torch.autograd import Variable
-import numpy as np
 from model import Net_G
 
 
-#  设置网络参数
+# 设置参数
 def set_parameter():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_root', default='data_set/test', help='训练数据保存路径')
-    parser.add_argument('--data_set', default='output', help='数据集文件名')
+    parser.add_argument('--test_image', default='./data_set/test_one/out1.png', help='测试图片的名称')
     parser.add_argument('--workers', type=int, default=0, help='工作线程数')
     parser.add_argument('--batchSize', type=int, default=64, help='输入图片批量大小')
     parser.add_argument('--imageSize', type=int, default=128, help='图片尺寸')
@@ -29,9 +26,7 @@ def set_parameter():
     parser.add_argument('--cuda', default=False, help='是否可以使用CUDA训练')
     parser.add_argument('--ngpu', type=int, default=1, help='使用GPU的数量')
     # model/netG_model.pth 使用模型继续训练
-    parser.add_argument('--netG', default='model/netG_30.pth', help="模型G的保存路径")
-    # model/netD_model.pth   使用模型继续训练
-    parser.add_argument('--netD', default='', help="模型G的保存路径")
+    parser.add_argument('--netG', default='model/netG_200.pth', help="模型G的保存路径")
     parser.add_argument('--outf', default='.', help='当前路径')
     parser.add_argument('--manualSeed', type=int, help='随机数')
     parser.add_argument('--nBottleneck', type=int, default=4000, help='训练的最大瓶颈')
@@ -43,40 +38,37 @@ def set_parameter():
     return opt
 
 
-# 加载数据集
+# 加载数据
 def load_data_set():
+    # 获取数据
     opt = set_parameter()
-    # transforms:将多个transform组合起来使用
-    transform = transforms.Compose([transforms.Scale(opt.imageSize),
-                                    transforms.CenterCrop(opt.imageSize),
-                                    transforms.ToTensor(),
+    transform = transforms.Compose([transforms.ToTensor(),
                                     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
-    # 将文件夹中的图像加载到 dataset 中，数据抽象
-    # print(dataset.imgs) 保存所有图片
-    dataset = dset.ImageFolder(root=opt.data_root, transform=transform)
-    # 将 dataset 中图像加载到 dataloader 中
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
-                                             shuffle=True, num_workers=opt.workers, drop_last=True)
-    return dataloader
+
+    image = utils.load_image(opt.test_image, opt.imageSize)
+    image = transform(image)
+    image = image.repeat(1, 1, 1, 1)
+    return image
 
 
-# 开始训练
-def test():
+# 测试修复一张图的结果
+def test_one():
     # 获取参数
     opt = set_parameter()
-    # 加载数据
-    dataloader = load_data_set()
-    # 加载网络
+    # 获取待修复的图片
+    test_img = load_data_set()
+    # 加载网络参数
     netG = Net_G(opt)
     netG.load_state_dict(torch.load(opt.netG, map_location=lambda storage, location: storage)['state_dict'])
+    # netG.requires_grad = False
     netG.eval()
-    # 数据转化为 tensor
-    input_real = torch.FloatTensor(opt.batchSize, 3, opt.imageSize, opt.imageSize)
-    input_cropped = torch.FloatTensor(opt.batchSize, 3, opt.imageSize, opt.imageSize)
-    real_center = torch.FloatTensor(opt.batchSize, 3, int(opt.imageSize / 2), int(opt.imageSize / 2))
-    # 定义损失
-    criterionMSE = nn.MSELoss()   # 均方损失函数
-    # 判断是否可用 GPU
+    # 设置tensor变量
+    input_real = torch.FloatTensor(1, 3, opt.imageSize, opt.imageSize)
+    input_cropped = torch.FloatTensor(1, 3, opt.imageSize, opt.imageSize)
+    real_center = torch.FloatTensor(1, 3, int(opt.imageSize / 2), int(opt.imageSize / 2))
+    # 定义损失函数
+    criterionMSE = nn.MSELoss()
+    # 使用CUDA
     if opt.cuda:
         netG.cuda()
         input_real = input_real.cuda()
@@ -84,37 +76,33 @@ def test():
         criterionMSE.cuda()
         real_center = real_center.cuda()
 
-    # 数据转化为 Variable
     input_real = Variable(input_real)
     input_cropped = Variable(input_cropped)
     real_center = Variable(real_center)
 
-    dataiter = iter(dataloader)
-    real_cpu, _ = dataiter.next()
-
-    input_real.data.resize_(real_cpu.size()).copy_(real_cpu)
-    input_cropped.data.resize_(real_cpu.size()).copy_(real_cpu)
-    real_center_cpu = real_cpu[:, :, 32:96, 32:96]
+    input_real.data.resize_(test_img.size()).copy_(test_img)
+    input_cropped.data.resize_(test_img.size()).copy_(test_img)
+    real_center_cpu = test_img[:, :, 32:96, 32:96]
     real_center.data.resize_(real_center_cpu.size()).copy_(real_center_cpu)
 
     input_cropped.data[:, 0, 34:94, 34:94] = 2 * 117.0 / 255.0 - 1.0
     input_cropped.data[:, 1, 34:94, 34:94] = 2 * 104.0 / 255.0 - 1.0
     input_cropped.data[:, 2, 34:94, 34:94] = 2 * 123.0 / 255.0 - 1.0
-
-    vutils.save_image(input_real.data, 'result/test/test_real_{}.png'.format(opt.netG[6:-4]))
-    # 使用网络G修复图片
+    # 使用G网络修复图像
     fake = netG(input_cropped)
 
     recon_image = input_cropped.clone()
     recon_image.data[:, :, 32:96, 32:96] = fake.data
-    vutils.save_image(recon_image.data, 'result/test/recon_img_{}.png'.format(opt.netG[6:-4]), normalize=True)
-    # 修复损失
+
+    utils.save_image('result/test_one/real_{}.png'.format(opt.test_image[-8:-3]), test_img[0])
+    # utils.save_image('result/test_one/cropped.png', input_cropped.data[0])
+    utils.save_image('result/test_one/recon_{}.png'.format(opt.test_image[-8:-3]), recon_image.data[0])
+
+    # 计算修复损失
     errG = criterionMSE(recon_image, input_real)
-    print("修复损失为：{:.4f}".format(errG.item()))
+    print('修复损失为：{:.4f}'.format(errG.item()))
+    print('图像修复：Successful!')
 
 
 if __name__ == "__main__":
-    test()
-    print("图像修复：Successful!")
-
-
+    test_one()
